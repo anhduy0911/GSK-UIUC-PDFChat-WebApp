@@ -1,2 +1,3 @@
 export BNB_CUDA_VERSION=122
+export TOKENIZERS_PARALLELISM=True
 python pdfquery.py

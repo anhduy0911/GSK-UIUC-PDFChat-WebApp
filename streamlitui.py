@@ -2,6 +2,8 @@ import os
 import tempfile
 import base64
 import argparse
+import box
+import yaml
 import streamlit as st
 from streamlit_chat import message
 from pdfquery import PDFQuery
@@ -30,7 +32,7 @@ def process_input():
             is_extract = False
         
         with st.session_state["thinking_spinner"], st.spinner(f"Thinking"):
-            query_text = st.session_state["pdfquery"].ask(user_text)
+            query_text = st.session_state["pdfquery"].ask(user_text, is_extract, use_chat_history=st.session_state["use_chat_history"])
 
         st.session_state["messages"].append((user_text, True, False))
         st.session_state["messages"].append((query_text, False, is_extract))
@@ -125,13 +127,17 @@ def chat_page():
 def get_pdf_retrieval(model):
     st.session_state["pdfquery"] = PDFQuery(model_name=model)
 
-def main(args):
+def toggle_chat_history():
+    st.session_state["use_chat_history"] = not st.session_state["use_chat_history"]
+
+def main(model):
     if len(st.session_state) == 0:
-        get_pdf_retrieval(args.model)
+        get_pdf_retrieval(model)
         st.session_state["messages"] = []
         st.session_state["has_uploaded_file"] = False
         st.session_state["temp_file_path"] = ""
         st.session_state["page_num"] = 1
+        st.session_state["use_chat_history"] = False
         
     st.header("ChatPDF")
 
@@ -144,17 +150,27 @@ def main(args):
         label_visibility="collapsed",
         accept_multiple_files=True,
     )
-
+    st.session_state["use_chat_history"] = st.toggle('Toggle chat history', key='chat_history_btn', on_change=toggle_chat_history)
     st.session_state["ingestion_spinner"] = st.empty()
 
     if st.session_state["has_uploaded_file"]:
         chat_page()
 
 if __name__ == "__main__":
+    # from huggingface_hub import login
+    # access_token_read = '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'
+    # login(token = access_token_read)
     parser = argparse.ArgumentParser()
     # parser.add_argument("--model", type=str, default='TheBloke/Llama-2-13B-chat-GPTQ')
-    parser.add_argument("--model", type=str, default='anhduy0911/LLM_Healthcare_Information_Extraction')
+    parser.add_argument('--config', type=str, default='./cfg/llm_cfg.yml')
+    # parser.add_argument("--model", type=str, default='anhduy0911/LLM_Healthcare_Information_Extraction')
+    def get_config(config_path):
+        # Import config vars
+        with open(config_path, 'r', encoding='utf8') as ymlfile:
+            cfg = box.Box(yaml.safe_load(ymlfile))
+        return cfg
 
+    
     args = parser.parse_args()
-    print(args)
-    main(args)
+    cfg = get_config(args.config)
+    main(cfg.LLM_MODEL)

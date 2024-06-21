@@ -1,4 +1,4 @@
-name: dna_test
+name: dna_chat
 channels:
   - defaults
 dependencies:
@@ -128,6 +128,7 @@ dependencies:
       - pypandoc==1.11
       - pypdf==3.8.1
       - pypdfium2==4.15.0
+      - python-box==7.2.0
       - python-dateutil==2.8.2
       - python-docx==0.8.11
       - python-dotenv==1.0.0

@@ -1,28 +1,34 @@
 import os
+import box
+import yaml
 import getpass
+import json
+import torch
 
 from langchain_community.embeddings import HuggingFaceInstructEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+# from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFium2Loader, Docx2txtLoader, TextLoader
 from langchain_community.llms.huggingface_pipeline import HuggingFacePipeline
 from langchain_core.prompts import PromptTemplate
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, pipeline
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain.chains import RetrievalQA
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
 
+with open('./cfg/llm_cfg.yml', 'r', encoding='utf8') as config:
+    cfg = box.Box(yaml.safe_load(config))
 
 class PDFQuery:
     def __init__(self, model_name = 'TheBloke/Llama-2-13B-chat-GPTQ') -> None:
-        self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1024, chunk_overlap=256)
+        self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=cfg.CHUNK_SIZE, chunk_overlap=cfg.CHUNK_OVERLAP)
         self.llm, self.prompt = self._setup_llm(model_name)
         self._contextualize_q_chain()
-        self.embeddings = HuggingFaceInstructEmbeddings(model_name="hkunlp/instructor-xl",
+        self.embeddings = HuggingFaceInstructEmbeddings(model_name=cfg.EMBEDDINGS_MODEL,
                                                       model_kwargs={"device": "cuda"}, 
-                                                      cache_folder='/scratch/bcgd/duyan2/.cache')
+                                                      cache_folder=cfg.CACHE_DIR)
         
         self.chain = None
         self.db = None
@@ -31,16 +37,18 @@ class PDFQuery:
         tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 
         generation_config = GenerationConfig.from_pretrained(model_name)
-        generation_config.max_new_tokens = 1024
+        generation_config.max_new_tokens = 4096
         generation_config.temperature = 0.0001
         generation_config.top_p = 0.95
         generation_config.do_sample = True
-        generation_config.repetition_penalty = 1.3
+        generation_config.repetition_penalty = 1.5
 
         model = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     device_map="auto",
-                    cache_dir='/scratch/bcgd/duyan2/.cache',
+                    torch_dtype=torch.float16,
+                    low_cpu_mem_usage=True,
+                    cache_dir=cfg.CACHE_DIR,
                     # disable_exllama=True
                 )
         print('Loading model from huggingface hub')
@@ -52,13 +60,13 @@ class PDFQuery:
         )
 
         template = """
-<s>[INST] <<SYS>>
-Extract the information as accurately as possible from the provided context. Provide NOTHING other than what is asked.
-<</SYS>>
-Context: 
+System: Provide information from the provided context and no yapping.
+
 {context}
-Question: {question} 
-Answer:[/INST]
+
+User: {question} 
+
+Assistant:
 """
         prompt = PromptTemplate(
             template=template,
@@ -68,14 +76,14 @@ Answer:[/INST]
         return HuggingFacePipeline(pipeline=text_pipeline, model_kwargs={"temperature": 0}), prompt
     
     def _contextualize_q_chain(self):
-        history_packed_template = """<s>[INST] <<SYS>> Given a chat history and the follow up user question, \
+        history_packed_template = """System: Given a chat history and the follow up user question, \
 formulate a standalone question which can be understood without the chat history. \
 Return the original question if it is not related to the chat history. 
-DO NOT add any external knowledge other than the chat history and the question provided. <</SYS>>\n\
-Chat History:
-{chat_history}
-Follow Up question: {question}
-Standalone question: [/INST]"""
+DO NOT add any external knowledge other than the chat history and the question provided.\n\
+
+Chat History: {chat_history}
+User: follow-up question: {question}
+Assistant:"""
         contextualize_q_prompt = PromptTemplate(
             template=history_packed_template,
             input_variables=["chat_history", "question"],
@@ -87,6 +95,7 @@ Standalone question: [/INST]"""
         if input.get("chat_history"):
             new_question = self.subchain.invoke({'chat_history': self._parse_chat_history(input["chat_history"]), 'question': input["question"]})
             print('NEW QUESTION:', new_question, 'HISTORY LENGTH:', len(input["chat_history"]))
+            new_question = self._postprocess_ans(new_question)
             return new_question
         else:
             print('ORIGINAL QUESTION')
@@ -95,13 +104,57 @@ Standalone question: [/INST]"""
     def _parse_chat_history(self, chat_history: dict):
         return "\n".join([f"{message.type}: {message.content}" for message in chat_history])
 
-    def ask(self, question: str) -> str:
+    def _postprocess_ie(self, ie_output: str):
+        json_obj = ie_output
+        is_json = False
+        try:
+            json_obj = json.loads(ie_output)
+            is_json = True
+        except:
+            try:
+                kv_s = ie_output.strip('{}').split(':')
+                len_kv_s = len(kv_s) // 2 * 2
+                
+                json_obj = {}
+                next_k = None
+                for i in range(len_kv_s):
+                    if i == 0:
+                    # if i % 2 == 0:
+                        key = kv_s[i].strip('\"')
+                    else:
+                        key = next_k
+
+                    next_k = kv_s[i+1].strip(' ,\"').split(', ')[-1].strip(' ,\"')
+                    val = kv_s[i+1].strip(' ,\"')[:-len(next_k)].strip(' ,\"')
+                    json_obj[key] = val
+                is_json = True
+            except:
+                print('return string')
+        
+        return str(json_obj) if is_json else ie_output
+
+    def _postprocess_ans(self, ans_output: str):
+        final_ans = ans_output.split('Assistant:')[-1].strip()
+        return final_ans
+
+    def ask(self, question: str, is_extract: bool, use_chat_history: bool) -> str:
         if self.chain is None:
             response = "Please, add a document."
         else:
-            # response = self.chain.invoke({'question': question, 'chat_history': self.chat_history.messages})
-            new_question = self._contextualized_question({'question': question, 'chat_history': self.chat_history.messages})
-            response = self.chain.invoke({'query': new_question})["result"].strip()
+            if use_chat_history:
+                print('USE CHAT HISTORY')
+                new_question = self._contextualized_question({'question': question, 'chat_history': self.chat_history.messages, 'is_extract': is_extract})
+            else:
+                new_question = question
+            response = self.chain.invoke({'query': new_question})["result"][len(new_question):].strip()
+            if is_extract:
+                response = self._postprocess_ie(response)
+            else:
+                response = self._postprocess_ans(response)
+            
+            if len(self.chat_history.messages) >= cfg.MAX_HIST_LEN:
+                self.chat_history.clear()
+                
             self.chat_history.add_messages([HumanMessage(content=question), AIMessage(content=response)])
         return response
 
@@ -118,23 +171,22 @@ Standalone question: [/INST]"""
         
         documents = loader.load()
         splitted_documents = self.text_splitter.split_documents(documents)
-        self.db = Chroma.from_documents(splitted_documents, self.embeddings).as_retriever()
-        # self.chain = (
-        #     RunnablePassthrough.assign(
-        #         context=self._contextualized_question | self.db | _format_docs
-        #     )
-        #     | self.prompt
-        #     | self.llm
-        # )
+        # heuristically - 2 top chunks contains the most important information about the document
+        self.ie_context = splitted_documents[0].page_content + splitted_documents[1].page_content
+        
+        db = FAISS.from_documents(splitted_documents, self.embeddings).as_retriever()
+        
+        # import IPython; IPython.embed(); exit(0)
         self.chain = RetrievalQA.from_chain_type(
             llm=self.llm, chain_type="stuff",
-            retriever=self.db,
+            retriever=db,
+            # retriever=compression_retriever,
             return_source_documents=True,
             chain_type_kwargs={"prompt": self.prompt}
         )
-
-        # return self.chain.invoke({'question': 'Please summarize the given document in a precise language', 'chat_history': []})
-        return self.chain.invoke({'query': 'Please summarize the given document in a precise language'})["result"].strip()
+        query = 'Please summarize the given document in a precise language'
+        return self.chain.invoke({'query': query})["result"][len(query):].strip()
+        
     def forget(self) -> None:
         self.db = None
         self.chain = None
@@ -146,8 +198,7 @@ if __name__ == "__main__":
     os.environ["LANGCHAIN_API_KEY"] = 'ls__72a643ed0bf043068f465eb5b38b2578'
     print('API KEY:', os.environ["LANGCHAIN_API_KEY"])
 
-    pdf = PDFQuery(model_name='anhduy0911/LLM_Healthcare_Information_Extraction')
-    # pdf = PDFQuery()
+    pdf = PDFQuery(model_name=cfg.LLM_MODEL)
     print(pdf.ingest("db/sample.pdf"))
     print('START____')
     import IPython; IPython.embed(); exit(0)
