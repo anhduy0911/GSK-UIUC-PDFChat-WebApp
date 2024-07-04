@@ -1,5 +1,5 @@
 # Use nvidia/cuda image
-FROM nvidia/cuda:11.6.1-devel-ubuntu20.04
+FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
 ENV TZ=America/Chicago
 
 # set bash as current shell
@@ -26,6 +26,10 @@ ENV PATH /opt/conda/bin:$PATH
 COPY ./environment.yml /tmp/environment.yml
 RUN conda update conda \
 && conda env create --name dna_chat -f /tmp/environment.yml
+
+# install AutoGPTQ from source
+RUN git clone -b v0.7.1-release https://github.com/AutoGPTQ/AutoGPTQ && cd AutoGPTQ
+RUN pip install -vvv -e .
 
 RUN echo "conda activate dna_chat" >> ~/.bashrc
 ENV PATH /opt/conda/envs/dna_chat/bin:$PATH

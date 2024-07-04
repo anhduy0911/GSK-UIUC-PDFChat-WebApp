@@ -36,7 +36,6 @@ def process_input():
 
         st.session_state["messages"].append((user_text, True, False))
         st.session_state["messages"].append((query_text, False, is_extract))
-        st.session_state["user_input"] = ""
 
 
 def read_and_save_file():
@@ -46,7 +45,6 @@ def read_and_save_file():
     # to reset the knowledge base
     st.session_state["pdfquery"].forget()  
     st.session_state["messages"] = []
-    st.session_state["user_input"] = ""
     st.session_state["has_uploaded_file"] = False
     if st.session_state["temp_file_path"] != "" and os.path.exists(st.session_state["temp_file_path"]):
         os.remove(st.session_state["temp_file_path"])
@@ -73,7 +71,6 @@ def reset_file():
     # to reset the knowledge base
     st.session_state["pdfquery"].forget()  
     st.session_state["messages"] = []
-    st.session_state["user_input"] = ""
     st.session_state["has_uploaded_file"] = False
     if st.session_state["temp_file_path"] != "" and os.path.exists(st.session_state["temp_file_path"]):
         os.remove(st.session_state["temp_file_path"])
@@ -118,7 +115,7 @@ def chat_page():
         displayFile(st.session_state["temp_file_path"])
     with col_2:
         display_messages()
-        st.text_area("Message", key="user_input", on_change=process_input)
+        st.chat_input('Message', key='user_input', on_submit=process_input)
 
     st.divider()
     st.markdown("GSK Project - LLM - 2023")

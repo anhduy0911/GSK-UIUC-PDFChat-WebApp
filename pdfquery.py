@@ -10,9 +10,10 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 # from langchain_community.vectorstores import Chroma
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFium2Loader, Docx2txtLoader, TextLoader
-from langchain_community.llms.huggingface_pipeline import HuggingFacePipeline
+from langchain_huggingface import HuggingFacePipeline
 from langchain_core.prompts import PromptTemplate
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, pipeline
+from transformers import AutoTokenizer, GenerationConfig, pipeline
+from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain.chains import RetrievalQA
@@ -34,26 +35,34 @@ class PDFQuery:
         self.db = None
     
     def _setup_llm(self, model_name):
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        tokenizer = AutoTokenizer.from_pretrained(cfg.TOKENIZER, 
+                                                #   gguf_file=cfg.GGUF_FILE, 
+                                                  use_fast=True)
 
-        generation_config = GenerationConfig.from_pretrained(model_name)
-        generation_config.max_new_tokens = 4096
+        generation_config = GenerationConfig()
+        generation_config.max_new_tokens = 8192
         generation_config.temperature = 0.0001
         generation_config.top_p = 0.95
         generation_config.do_sample = True
         generation_config.repetition_penalty = 1.5
 
-        model = AutoModelForCausalLM.from_pretrained(
+        quantize_config = BaseQuantizeConfig(
+            bits=4,  # quantize model to 4-bit
+            group_size=128,  # it is recommended to set the value to 128
+            desc_act=False,  # set to False can significantly speed up inference but the perplexity may slightly bad
+        )
+                
+        model = AutoGPTQForCausalLM.from_quantized(
                     model_name,
                     device_map="auto",
                     torch_dtype=torch.float16,
                     low_cpu_mem_usage=True,
                     cache_dir=cfg.CACHE_DIR,
-                    # disable_exllama=True
+                    quantization_config=quantize_config,
                 )
         print('Loading model from huggingface hub')
         text_pipeline = pipeline(
-            "text-generation",
+            task = 'text-generation',
             model=model,
             tokenizer=tokenizer,
             generation_config=generation_config,
@@ -105,13 +114,17 @@ Assistant:"""
         return "\n".join([f"{message.type}: {message.content}" for message in chat_history])
 
     def _postprocess_ie(self, ie_output: str):
-        json_obj = ie_output
+        ie_output = self._postprocess_ans(ie_output)
+        print('JSON OBJ:', ie_output)
         is_json = False
         try:
             json_obj = json.loads(ie_output)
             is_json = True
         except:
             try:
+                import IPython; IPython.embed();
+                if '```' in ie_output:
+                    ie_output = ie_output.split('```')[-2].strip()
                 kv_s = ie_output.strip('{}').split(':')
                 len_kv_s = len(kv_s) // 2 * 2
                 
@@ -135,6 +148,9 @@ Assistant:"""
 
     def _postprocess_ans(self, ans_output: str):
         final_ans = ans_output.split('Assistant:')[-1].strip()
+        for char in ['“', '”', '„']:
+            final_ans = final_ans.replace(char, '\"')
+        final_ans = final_ans.replace('\\', '')
         return final_ans
 
     def ask(self, question: str, is_extract: bool, use_chat_history: bool) -> str:
@@ -146,9 +162,11 @@ Assistant:"""
                 new_question = self._contextualized_question({'question': question, 'chat_history': self.chat_history.messages, 'is_extract': is_extract})
             else:
                 new_question = question
-            response = self.chain.invoke({'query': new_question})["result"][len(new_question):].strip()
+            # response = self.chain.invoke({'query': new_question})["result"][len(new_question):].strip()
+            response = self.chain(new_question)["result"].strip()
             if is_extract:
-                response = self._postprocess_ie(response)
+                # response = self._postprocess_ie(response)
+                response = self._postprocess_ans(response)
             else:
                 response = self._postprocess_ans(response)
             
@@ -185,7 +203,7 @@ Assistant:"""
             chain_type_kwargs={"prompt": self.prompt}
         )
         query = 'Please summarize the given document in a precise language'
-        return self.chain.invoke({'query': query})["result"][len(query):].strip()
+        return self._postprocess_ans(self.chain(query)["result"].strip())
         
     def forget(self) -> None:
         self.db = None
@@ -193,10 +211,10 @@ Assistant:"""
         self.chat_history.clear()
 
 if __name__ == "__main__":
-    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    # os.environ["LANGCHAIN_TRACING_V2"] = "true"
     # os.environ["LANGCHAIN_API_KEY"] = getpass.getpass()
-    os.environ["LANGCHAIN_API_KEY"] = 'ls__72a643ed0bf043068f465eb5b38b2578'
-    print('API KEY:', os.environ["LANGCHAIN_API_KEY"])
+    # os.environ["LANGCHAIN_API_KEY"] = 'ls__72a643ed0bf043068f465eb5b38b2578'
+    # print('API KEY:', os.environ["LANGCHAIN_API_KEY"])
 
     pdf = PDFQuery(model_name=cfg.LLM_MODEL)
     print(pdf.ingest("db/sample.pdf"))
