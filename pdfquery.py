@@ -10,7 +10,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 # from langchain_community.vectorstores import Chroma
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFium2Loader, Docx2txtLoader, TextLoader
-from langchain_huggingface import HuggingFacePipeline
+from langchain_community.llms.huggingface_pipeline import HuggingFacePipeline
 from langchain_core.prompts import PromptTemplate
 from transformers import AutoTokenizer, GenerationConfig, pipeline
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
@@ -35,7 +35,7 @@ class PDFQuery:
         self.db = None
     
     def _setup_llm(self, model_name):
-        tokenizer = AutoTokenizer.from_pretrained(cfg.TOKENIZER, 
+        tokenizer = AutoTokenizer.from_pretrained(cfg.LLM_MODEL, 
                                                 #   gguf_file=cfg.GGUF_FILE, 
                                                   use_fast=True)
 

@@ -27,18 +27,23 @@ COPY ./environment.yml /tmp/environment.yml
 RUN conda update conda \
 && conda env create --name dna_chat -f /tmp/environment.yml
 
-# install AutoGPTQ from source
-RUN git clone -b v0.7.1-release https://github.com/AutoGPTQ/AutoGPTQ && cd AutoGPTQ
-RUN pip install -vvv -e .
-
 RUN echo "conda activate dna_chat" >> ~/.bashrc
 ENV PATH /opt/conda/envs/dna_chat/bin:$PATH
 ENV CONDA_DEFAULT_ENV $dna_chat
 
+# install AutoGPTQ from source
+# RUN git clone -b v0.7.1-release https://github.com/AutoGPTQ/AutoGPTQ
+# WORKDIR AutoGPTQ
+# RUN pip install -vvv -e .
+
 # actual process running
 WORKDIR /chatpdf
-COPY * /chatpdf/
+COPY . /chatpdf/
+
+# Make the shell script executable
+RUN chmod +x /chatpdf/sh/run_streamlit.sh
 
 EXPOSE 8501
 
-ENTRYPOINT ["streamlit", "run", "streamlitui.py", "--server.port=8501", "--browser.gatherUsageStats=False", "--server.address=0.0.0.0"]
+# ENTRYPOINT ["streamlit", "run", "streamlitui.py", "--server.port=8501", "--browser.gatherUsageStats=False", "--server.address=0.0.0.0"]
+ENTRYPOINT ["sh/run_streamlit.sh"]
