@@ -13,7 +13,7 @@ Ask questions, extract information, and summarize documents with AI.
 
 1. Clone this repo:
 ```
-git clone https://github.com/anhduy0911/GSK_LLM.git
+git clone https://github.com/anhduy0911/GSK-UIUC-PDFChat-WebApp.git
 ```
 
 2. Install docker if not already installed:

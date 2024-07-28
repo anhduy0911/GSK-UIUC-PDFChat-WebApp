@@ -17,6 +17,7 @@ from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain.chains import RetrievalQA
+from langchain.chains.llm import LLMChain
 from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
 
 with open('./cfg/llm_cfg.yml', 'r', encoding='utf8') as config:
@@ -25,12 +26,12 @@ with open('./cfg/llm_cfg.yml', 'r', encoding='utf8') as config:
 class PDFQuery:
     def __init__(self, model_name = 'TheBloke/Llama-2-13B-chat-GPTQ') -> None:
         self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=cfg.CHUNK_SIZE, chunk_overlap=cfg.CHUNK_OVERLAP)
-        self.llm, self.prompt = self._setup_llm(model_name)
+        self.llm, self.prompt, self.prompt_nctx = self._setup_llm(model_name)
         self._contextualize_q_chain()
         self.embeddings = HuggingFaceInstructEmbeddings(model_name=cfg.EMBEDDINGS_MODEL,
                                                       model_kwargs={"device": "cuda"}, 
                                                       cache_folder=cfg.CACHE_DIR)
-        
+        self.has_file = False
         self.chain = None
         self.db = None
     
@@ -82,7 +83,19 @@ Assistant:
             input_variables=["context", "question"],
         )
 
-        return HuggingFacePipeline(pipeline=text_pipeline, model_kwargs={"temperature": 0}), prompt
+        template_no_context = """
+System: You're an assistant that provide supportive and evidence-based information on health-related topic. No yapping.
+
+User: {question} 
+
+Assistant:
+"""
+        prompt_no_context = PromptTemplate(
+            template=template_no_context,
+            input_variables=["question"],
+        )
+
+        return HuggingFacePipeline(pipeline=text_pipeline, model_kwargs={"temperature": 0}), prompt, prompt_no_context
     
     def _contextualize_q_chain(self):
         history_packed_template = """System: Given a chat history and the follow up user question, \
@@ -162,8 +175,10 @@ Assistant:"""
                 new_question = self._contextualized_question({'question': question, 'chat_history': self.chat_history.messages, 'is_extract': is_extract})
             else:
                 new_question = question
-            # response = self.chain.invoke({'query': new_question})["result"][len(new_question):].strip()
-            response = self.chain(new_question)["result"].strip()
+            if not self.has_file:
+                response = self.chain.invoke({'question': new_question})["text"].strip()
+            else:
+                response = self.chain(new_question)["result"].strip()
             if is_extract:
                 # response = self._postprocess_ie(response)
                 response = self._postprocess_ans(response)
@@ -176,7 +191,12 @@ Assistant:"""
             self.chat_history.add_messages([HumanMessage(content=question), AIMessage(content=response)])
         return response
 
-    def ingest(self, file_path: os.PathLike, file_extension='pdf') -> None:
+    def ingest(self, file_path: os.PathLike=None, file_extension='pdf') -> None:
+        if file_path is None:
+            self.chain = LLMChain(llm=self.llm, prompt=self.prompt_nctx)
+            # self.chain = self.prompt | self.llm
+            return
+
         if file_extension == ".txt":
             loader = TextLoader(file_path)
         elif file_extension in [".doc", ".docx"]:
@@ -206,8 +226,13 @@ Assistant:"""
         return self._postprocess_ans(self.chain(query)["result"].strip())
         
     def forget(self) -> None:
+        print('*' * 50, ' Reset the model ', '*' * 50)
+        del self.chain
+        del self.db
+
         self.db = None
         self.chain = None
+        self.has_file = False
         self.chat_history.clear()
 
 if __name__ == "__main__":
@@ -218,5 +243,6 @@ if __name__ == "__main__":
 
     pdf = PDFQuery(model_name=cfg.LLM_MODEL)
     print(pdf.ingest("db/sample.pdf"))
+    # print(pdf.ingest())
     print('START____')
     import IPython; IPython.embed(); exit(0)
